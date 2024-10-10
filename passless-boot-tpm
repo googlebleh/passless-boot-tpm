@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+#
+# Prepare a system to automatically unlock its LUKS-encrypted root on
+# the next boot.
+#
+# This script temporarily enrolls a LUKS keyfile in the TPM.
+#
+# Current limitations:
+# - assumes systemd
+#
+
+detect_encrypted_rootfs ()
+{
+	uuid_regex='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+	read -r cmdline < /proc/cmdline
+	if [[ "$cmdline" =~ cryptdevice=UUID=device-($uuid_regex):root ]]; then
+		# encrypt hook
+		device_uuid="${BASH_REMATCH[1]}"
+	elif [[ "$cmdline" =~ rd\.luks\.name=($uuid_regex)=cryptroot ]]; then
+		# sd-encrypt hook
+		device_uuid="${BASH_REMATCH[1]}"
+	else
+		echo "Error: couldn't identify encrypted root partition."
+	fi
+	# TODO: handle systemd-gpt-auto-generator
+	
+	echo "$device_uuid"
+}
+
+passless_boot_enable ()
+{
+	device_uuid="$(detect_encrypted_rootfs)"
+	device="$(blkid --uuid "$device_uuid")"
+	if ! cryptsetup isLuks "$device"; then
+		echo "Detected encrypted root $device is not LUKS-encrypted, and therefore incompatible with $0."
+		exit 20
+	elif grep -q -e "$device_uuid" -e "$device" /etc/crypttab; then
+		echo "Error: rootfs already auto-mounted via crypttab."
+		echo "Cowardly refusing to enable passless boot." 
+		exit 21
+	fi
+
+	enroll_output="$(systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs="" "$device")"
+	if [[ "$enroll_output" =~ New TPM2 token enrolled as key slot ([0-9]+)\. ]]; then
+		luks_slot="${BASH_REMATCH[1]}"
+	else
+		echo "Error: couldn't identify LUKS keyslot used for temporary key."
+		echo "Manual cleanup required."
+		exit 22
+	fi
+	# TODO: test that systemd can open the LUKS disk
+	# sudo systemctl start cryptsetup.target
+	# systemctl is-active systemd-cryptsetup@passless_boot_tpm.service
+
+	echo "passless_boot_tpm /dev/disk/by-uuid/$device_uuid - tpm2-device=auto" >> /etc/crypttab
+}
+
+main ()
+{
+	luks_slot=-1
+
+	passless_boot_enable
+	if [ "$luks_slot" -lt 0 ]; then
+		echo "Error: couldn't identify LUKS keyslot used for temporary key."
+		echo "Manual cleanup required."
+		exit 10
+	fi
+
+	service_name="passless-boot-tpm_cleanup@$luks_slot.service"
+	systemctl enable --quiet "$service_name"
+	if ! systemctl is-enabled "$service_name"; then
+		echo "Error: couldn't enable $service_name on next boot."
+		echo "Manual cleanup required."
+		exit 11
+	fi
+
+	if command -v rguard 2>&1 >/dev/null; then
+		rguard -0 --loglevel error
+	fi
+}

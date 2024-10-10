@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+#
+# Clean up passless-boot-tpm state upon successful boot
+#
+
+systemctl disable "$service"
+
+if ! rguard -1 --loglevel error; then
+	echo "Failed to re-activate reboot-guard"
+fi
