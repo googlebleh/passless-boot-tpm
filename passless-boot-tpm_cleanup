@@ -5,8 +5,26 @@ set -euo pipefail
 # Clean up passless-boot-tpm state upon successful boot
 #
 
-systemctl disable "$service"
+source /usr/lib/passless-boot-tpm_lib.sh
 
-if ! rguard -1 --loglevel error; then
-	echo "Failed to re-activate reboot-guard"
+if [ $# -ge 1 ]; then
+	luks_slot="$1"
+fi
+if [ $# -ge 2 ]; then
+	service_name="$2"
+fi
+
+dm_path="$(detect_dmcrypt_path)"
+device_uuid="$(lsblk --noheadings -o UUID "$dm_path")"
+device="/dev/disk/by-uuid/$device_uuid"
+systemd-cryptenroll --wipe-slot "$luks_slot" "$device"
+
+if [ -n "$service_name" ]; then
+	systemctl disable "$service_name"
+fi
+
+if command -v rguard 2>&1 >/dev/null; then
+	if ! rguard -1 --loglevel error; then
+		echo "Failed to re-activate reboot-guard"
+	fi
 fi

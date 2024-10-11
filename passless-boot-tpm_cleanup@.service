@@ -3,7 +3,7 @@ Description=Clean up passless-boot-tpm state upon successful boot
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/passless-boot-tpm_cleanup %N
+ExecStart=/usr/bin/passless-boot-tpm_cleanup "%i" "%n"
 
 [Install]
 WantedBy=default.target
