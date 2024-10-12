@@ -1,18 +1,39 @@
-rootfs_name=root
-
-detect_dmcrypt_path ()
+perror ()
 {
-	findmnt --noheadings -o SOURCE /
+	echo >&2 "Error:" $@
+}
+
+dm_underlying_uuid ()
+{
+	while read -r line; do
+		if [[ "$line" =~ device:[[:space:]]+(.+)$ ]]; then
+			blkid -s UUID -o value "${BASH_REMATCH[1]}"
+			return 0
+		fi
+	done < <(cryptsetup status "$dm_path")
+	return 1
 }
 
 detect_dmcrypt_name ()
 {
 	dm_path="$1"
 	if ! [[ "$dm_path" =~ ^/dev/mapper/([^/]+)$ ]]; then
-		echo "Error: rootfs doesn't appear to be a dm-crypt device."
+		perror "rootfs doesn't appear to be a dm-crypt device."
 		exit 23
 	fi
 	dm_name="${BASH_REMATCH[1]}"
+}
+
+cryptroot_device ()
+{
+	dm_path="$(findmnt --noheadings -o SOURCE /)"
+	device="/dev/disk/by-uuid/$(dm_underlying_uuid "$dm_path")"
+
+	if ! cryptsetup isLuks "$device"; then
+		perror "detected encrypted root $device is unsupported (not LUKS-encrypted)."
+		return 1
+	fi
+	echo "$device"
 }
 
 detect_in_crypttab ()
@@ -44,7 +65,7 @@ detect_encrypted_rootfs ()
 		mount_type="sd-encrypt-crypttab"
 		# device_uuid set by detect_in_crypttab
 	else
-		echo "Error: couldn't identify encrypted root partition."
+		perror "couldn't identify encrypted root partition."
 	fi
 	# TODO: handle systemd-gpt-auto-generator
 }

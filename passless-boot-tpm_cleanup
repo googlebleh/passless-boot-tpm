@@ -14,10 +14,7 @@ if [ $# -ge 2 ]; then
 	service_name="$2"
 fi
 
-dm_path="$(detect_dmcrypt_path)"
-device_uuid="$(lsblk --noheadings -o UUID "$dm_path")"
-device="/dev/disk/by-uuid/$device_uuid"
-systemd-cryptenroll --wipe-slot "$luks_slot" "$device"
+systemd-cryptenroll --wipe-slot "$luks_slot" "$(cryptroot_device)"
 
 if [ -n "$service_name" ]; then
 	systemctl disable "$service_name"
