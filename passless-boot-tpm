@@ -5,46 +5,32 @@ set -euo pipefail
 # Prepare a system to automatically unlock its LUKS-encrypted root on
 # the next boot.
 #
-# This script temporarily enrolls a LUKS keyfile in the TPM.
+# This script temporarily enrolls a LUKS token in the TPM, scheduling a
+# service to remove it on the next boot.
 #
 # Current limitations:
 # - assumes systemd
 #
 
-detect_encrypted_rootfs ()
-{
-	uuid_regex='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+source /usr/lib/passless-boot-tpm_lib.sh
 
-	read -r cmdline < /proc/cmdline
-	if [[ "$cmdline" =~ cryptdevice=UUID=device-($uuid_regex):root ]]; then
-		# encrypt hook
-		device_uuid="${BASH_REMATCH[1]}"
-	elif [[ "$cmdline" =~ rd\.luks\.name=($uuid_regex)=cryptroot ]]; then
-		# sd-encrypt hook
-		device_uuid="${BASH_REMATCH[1]}"
-	else
-		echo "Error: couldn't identify encrypted root partition."
-	fi
-	# TODO: handle systemd-gpt-auto-generator
-	
-	echo "$device_uuid"
-}
-
-passless_boot_enable ()
+configure_tpm_autounlock ()
 {
-	device_uuid="$(detect_encrypted_rootfs)"
-	device="$(blkid --uuid "$device_uuid")"
-	if ! cryptsetup isLuks "$device"; then
-		echo "Detected encrypted root $device is not LUKS-encrypted, and therefore incompatible with $0."
-		exit 20
-	elif grep -q -e "$device_uuid" -e "$device" /etc/crypttab; then
-		echo "Error: rootfs already auto-mounted via crypttab."
+	dm_path="$(cryptroot_path)"
+	dm_name="$(dmcrypt_name "$dm_path")"
+	device="$(cryptroot_device "$dm_path")"
+
+	detect_encrypted_rootfs "$dm_name"
+	if ! grep -q -e "$device_uuid" -e "$device" /etc/cmdline; then
+		echo "Error: rootfs already auto-mounted via cmdline."
 		echo "Cowardly refusing to enable passless boot." 
 		exit 21
 	fi
 
+	enroll_re="New TPM2 token enrolled as key slot ([0-9]+)\."
+	systemd-cryptenroll "$device"
 	enroll_output="$(systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs="" "$device")"
-	if [[ "$enroll_output" =~ New TPM2 token enrolled as key slot ([0-9]+)\. ]]; then
+	if [[ "$enroll_output" =~ $enroll_re ]]; then
 		luks_slot="${BASH_REMATCH[1]}"
 	else
 		echo "Error: couldn't identify LUKS keyslot used for temporary key."
@@ -55,14 +41,24 @@ passless_boot_enable ()
 	# sudo systemctl start cryptsetup.target
 	# systemctl is-active systemd-cryptsetup@passless_boot_tpm.service
 
-	echo "passless_boot_tpm /dev/disk/by-uuid/$device_uuid - tpm2-device=auto" >> /etc/crypttab
+	if [ sd-encrypt-crypttab != "$mount_type" ]; then
+		not_yet_implemented
+	fi
+	if ! grep -q "^$dm_name.\+tpm2-device=auto" /etc/crypttab.initramfs; then
+		local sp="[:space:]"
+		sed \
+			--regexp-extended \
+			--in-place .bak \
+			"s/^($dm_name[$sp]+[^$sp]+[$sp]+[^$sp]+[$sp]+)([^$sp]+)/\1tpm2-device=auto,\2/" \
+			/etc/crypttab.initramfs
+	fi
 }
 
 main ()
 {
 	luks_slot=-1
 
-	passless_boot_enable
+	configure_tpm_autounlock
 	if [ "$luks_slot" -lt 0 ]; then
 		echo "Error: couldn't identify LUKS keyslot used for temporary key."
 		echo "Manual cleanup required."
@@ -70,7 +66,7 @@ main ()
 	fi
 
 	service_name="passless-boot-tpm_cleanup@$luks_slot.service"
-	systemctl enable --quiet "$service_name"
+	echo systemctl enable --quiet "$service_name"
 	if ! systemctl is-enabled "$service_name"; then
 		echo "Error: couldn't enable $service_name on next boot."
 		echo "Manual cleanup required."
@@ -81,3 +77,5 @@ main ()
 		rguard -0 --loglevel error
 	fi
 }
+
+main

@@ -14,19 +14,24 @@ dm_underlying_uuid ()
 	return 1
 }
 
-detect_dmcrypt_name ()
+dmcrypt_name ()
 {
 	dm_path="$1"
 	if ! [[ "$dm_path" =~ ^/dev/mapper/([^/]+)$ ]]; then
 		perror "rootfs doesn't appear to be a dm-crypt device."
 		exit 23
 	fi
-	dm_name="${BASH_REMATCH[1]}"
+	echo "${BASH_REMATCH[1]}"
+}
+
+cryptroot_path ()
+{
+	findmnt --noheadings -o SOURCE /
 }
 
 cryptroot_device ()
 {
-	dm_path="$(findmnt --noheadings -o SOURCE /)"
+	dm_path="$1"
 	device="/dev/disk/by-uuid/$(dm_underlying_uuid "$dm_path")"
 
 	if ! cryptsetup isLuks "$device"; then
